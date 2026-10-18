@@ -1,26 +1,37 @@
-package com.universalsb.mod;
+package com.example;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.Gui;
+import net.minecraft.client.gui.GuiButton;
+import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.gui.inventory.GuiChest;
 import net.minecraft.client.gui.inventory.GuiContainer;
 import net.minecraft.client.renderer.GlStateManager;
+import net.minecraft.client.renderer.RenderGlobal;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.command.CommandBase;
 import net.minecraft.command.ICommandSender;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.item.EntityArmorStand;
+import net.minecraft.entity.passive.EntityBat;
+import net.minecraft.init.Blocks;
 import net.minecraft.inventory.ContainerChest;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.inventory.Slot;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.NBTTagList;
 import net.minecraft.scoreboard.Score;
 import net.minecraft.scoreboard.ScoreObjective;
 import net.minecraft.scoreboard.ScorePlayerTeam;
 import net.minecraft.scoreboard.Scoreboard;
+import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.StringUtils;
@@ -28,8 +39,11 @@ import net.minecraftforge.client.ClientCommandHandler;
 import net.minecraftforge.client.event.ClientChatReceivedEvent;
 import net.minecraftforge.client.event.GuiScreenEvent;
 import net.minecraftforge.client.event.RenderGameOverlayEvent;
+import net.minecraftforge.client.event.RenderWorldLastEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.player.ItemTooltipEvent;
+import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.event.world.BlockEvent;
 import net.minecraftforge.fml.client.registry.ClientRegistry;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
@@ -39,58 +53,131 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
 import net.minecraftforge.fml.relauncher.ReflectionHelper;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
+import org.lwjgl.opengl.GL11;
 
-import java.io.*;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.text.NumberFormat;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-@Mod(modid = "universalsb", name = "Universal SkyBlock QoL", version = "2.0.0", clientSideOnly = true)
+@Mod(modid = UniversalSkyblockMod.MODID, name = UniversalSkyblockMod.NAME, version = UniversalSkyblockMod.VERSION, clientSideOnly = true)
 public class UniversalSkyblockMod {
 
+    public static final String MODID = "universalsb";
+    public static final String NAME = "Universal SkyBlock All-In-One";
+    public static final String VERSION = "3.0.0";
+
+    // Keybindings
     public static KeyBinding lockSlotKey;
+    public static KeyBinding openGuiKey;
+
+    // Feature Toggles (Saved in Config)
+    public static boolean forceEnableEverywhere = false; // Useful if scoreboard is hidden
     public static boolean inSkyblock = false;
+    public static boolean isFakepixel = false;
     public static boolean enableTooltips = true;
     public static boolean enableHud = true;
-    public static boolean enableSolvers = true;
+    public static boolean enableTerminalSolvers = true;
+    public static boolean enableDungeonESP = true;
+    public static boolean enableSlotLocking = true;
+    public static boolean enableScrollTooltips = true;
+    public static boolean enableStemProtection = true;
+    public static boolean enableCooldowns = true;
+    public static boolean openMenuNextTick = false;
 
+    // HUD Position
+    public static int hudX = 8;
+    public static int hudY = 8;
+
+    // Scrollable Tooltip Offset
+    private static int tooltipScrollY = 0;
+
+    // Persistent Storage
     private static final Set<Integer> lockedSlots = new HashSet<>();
     private static File configFile;
 
-    // Reflection fields for accurate GUI coordinates (Fixes Potion shift & 6-row chests)
+    // Economy Databases
+    public static final Map<String, Double> lowestBinMap = new ConcurrentHashMap<>();
+    public static final Map<String, Double> fakepixelLocalBinMap = new ConcurrentHashMap<>();
+    public static final Map<String, Double> bazaarBuyMap = new ConcurrentHashMap<>();
+    public static final Map<String, Double> bazaarSellMap = new ConcurrentHashMap<>();
+    public static String apiStatus = "Fetching...";
+    private final NumberFormat formatter = NumberFormat.getInstance(Locale.US);
+
+    // Reflection Fields for GuiContainer
     private static Field guiLeftField;
     private static Field guiTopField;
 
-    // Economy Caches
-    public static final Map<String, Double> lowestBinMap = new ConcurrentHashMap<>();
-    public static final Map<String, Double> bazaarBuyMap = new ConcurrentHashMap<>();
-    public static final Map<String, Double> bazaarSellMap = new ConcurrentHashMap<>();
-    private final NumberFormat formatter = NumberFormat.getInstance(Locale.US);
-
-    // HUD & Tracker States
+    // Action Bar & Scoreboard Trackers
     private String currentHealth = "100/100";
     private String currentDefense = "0";
     private String currentMana = "100/100";
-    private String slayerStatus = "None";
-    private int zealotKills = 0;
+    private int currentEHP = 100;
+    private String slayerQuestLine = "None";
+    private String dungeonSecretsLine = "";
+    private int zealotsSinceEye = 0;
+    private int totalZealots = 0;
+    private long miningSpeedBoostReadyAt = 0;
     private int tickCounter = 0;
 
-    private final Pattern hpPattern = Pattern.compile("([0-9,]+/[0-9,]+)❤");
+    // Item Cooldown Tracking (Item ID -> Expiration Timestamp)
+    private final Map<String, Long> cooldownMap = new HashMap<>();
+
+    // Three Weirdos NPC Puzzle Solutions
+    private static final String[] WEIRDO_SOLUTIONS = {
+        "The reward is not in my chest!",
+        "At least one of them is lying, and the reward is not in ",
+        "My chest doesn't have the reward. We are all telling the truth.",
+        "My chest has the reward and I'm telling the truth!",
+        "The reward isn't in any of our chests.",
+        "Both of them are telling the truth. Also, "
+    };
+
+    // Regex Patterns
+    private final Pattern hpPattern = Pattern.compile("([0-9,]+)/([0-9,]+)❤");
     private final Pattern defPattern = Pattern.compile("([0-9,]+)❈");
     private final Pattern manaPattern = Pattern.compile("([0-9,]+/[0-9,]+)✎");
+    private final Pattern secretsPattern = Pattern.compile("([0-9]+/[0-9]+) Secrets");
+    private final Pattern fakepixelBinPattern = Pattern.compile("Buy it now: ([0-9,]+) coins");
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
-        lockSlotKey = new KeyBinding("Lock Inventory Slot", Keyboard.KEY_L, "Universal SkyBlock");
-        ClientRegistry.registerKeyBinding(lockSlotKey);
+        // 1. Bypass PojavLauncher / Old Java 8 SSL Certificate Errors first!
+        bypassPojavSSL();
 
+        // 2. Register Keybinds
+        lockSlotKey = new KeyBinding("Lock/Unlock Slot", Keyboard.KEY_L, "Universal SkyBlock");
+        openGuiKey = new KeyBinding("Open USB Mod Menu", Keyboard.KEY_RSHIFT, "Universal SkyBlock");
+        ClientRegistry.registerKeyBinding(lockSlotKey);
+        ClientRegistry.registerKeyBinding(openGuiKey);
+
+        // 3. Setup Reflection for accurate GUI slot positions
         try {
             guiLeftField = ReflectionHelper.findField(GuiContainer.class, "guiLeft", "field_147003_i");
             guiTopField = ReflectionHelper.findField(GuiContainer.class, "guiTop", "field_147009_r");
@@ -98,45 +185,128 @@ public class UniversalSkyblockMod {
             guiTopField.setAccessible(true);
         } catch (Exception ignored) {}
 
-        configFile = new File(Minecraft.getMinecraft().mcDataDir, "config/universalsb_locked.cfg");
-        loadLockedSlots();
+        // 4. Load Saved Config & Locked Slots
+        configFile = new File(Minecraft.getMinecraft().mcDataDir, "config/universalsb_config.properties");
+        loadConfig();
 
+        // 5. Register Events & Commands
         MinecraftForge.EVENT_BUS.register(this);
         ClientCommandHandler.instance.registerCommand(new UsbCommand());
 
+        // 6. Start Background API Price Fetcher
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
             fetchLowestBins();
             fetchBazaarPrices();
         }, 0, 5, TimeUnit.MINUTES);
     }
 
-    // --- 1. SERVER & SCOREBOARD DETECTION (HYPIXEL + FAKEPIXEL) ---
+    // =========================================================================
+    // 1. POJAVLAUNCHER / ANDROID SSL BYPASS & API FETCHERS
+    // =========================================================================
+    private static void bypassPojavSSL() {
+        try {
+            TrustManager[] trustAllCerts = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() { return null; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                }
+            };
+            SSLContext sc = SSLContext.getInstance("TLS");
+            sc.init(null, trustAllCerts, new SecureRandom());
+            HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
+            HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+        } catch (Exception ignored) {}
+    }
+
+    private static void fetchLowestBins() {
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URL("https://moulberry.codes/lowestbin.json").openConnection();
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (UniversalSkyblockMod/3.0)");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            JsonObject json = new JsonParser().parse(new InputStreamReader(conn.getInputStream())).getAsJsonObject();
+            for (Map.Entry<String, JsonElement> e : json.entrySet()) {
+                lowestBinMap.put(e.getKey().toUpperCase(), e.getValue().getAsDouble());
+            }
+            apiStatus = "Online (" + lowestBinMap.size() + " items)";
+        } catch (Exception e) {
+            apiStatus = "LBIN Error: " + e.getClass().getSimpleName();
+        }
+    }
+
+    private static void fetchBazaarPrices() {
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URL("https://api.hypixel.net/skyblock/bazaar").openConnection();
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (UniversalSkyblockMod/3.0)");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            JsonObject root = new JsonParser().parse(new InputStreamReader(conn.getInputStream())).getAsJsonObject();
+            if (root.has("products")) {
+                JsonObject products = root.getAsJsonObject("products");
+                for (Map.Entry<String, JsonElement> e : products.entrySet()) {
+                    JsonObject qs = e.getValue().getAsJsonObject().getAsJsonObject("quick_status");
+                    bazaarBuyMap.put(e.getKey().toUpperCase(), qs.get("buyPrice").getAsDouble());
+                    bazaarSellMap.put(e.getKey().toUpperCase(), qs.get("sellPrice").getAsDouble());
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    // =========================================================================
+    // 2. SERVER DETECTION, SCOREBOARD PARSING & FAKEPIXEL AH SCRAPER
+    // =========================================================================
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
         Minecraft mc = Minecraft.getMinecraft();
+
+        if (openMenuNextTick) {
+            openMenuNextTick = false;
+            mc.displayGuiScreen(new UsbConfigGui());
+        }
+
+        if (openGuiKey.isPressed()) {
+            mc.displayGuiScreen(new UsbConfigGui());
+        }
+
         if (mc.theWorld == null || mc.thePlayer == null) {
             inSkyblock = false;
             return;
         }
-        if (++tickCounter < 20) return;
+
+        // Scrape Fakepixel Auction House if a Chest GUI is open
+        if (mc.currentScreen instanceof GuiChest) {
+            scrapeAuctionHouseChest((GuiChest) mc.currentScreen);
+        } else {
+            tooltipScrollY = 0; // Reset tooltip scroll when closing inventory
+        }
+
+        if (++tickCounter < 15) return;
         tickCounter = 0;
+
+        if (forceEnableEverywhere) {
+            inSkyblock = true;
+            return;
+        }
 
         Scoreboard sb = mc.theWorld.getScoreboard();
         if (sb == null) return;
         ScoreObjective obj = sb.getObjectiveInDisplaySlot(1);
+
         if (obj != null) {
             String title = StringUtils.stripControlCodes(obj.getDisplayName()).toUpperCase();
             inSkyblock = title.contains("SKYBLOCK") || title.contains("SKIBLOCK") || title.contains("FAKEPIXEL");
 
-            // Parse Sidebar for Slayer Progress
-            slayerStatus = "None";
+            slayerQuestLine = "None";
+            isFakepixel = false;
             Collection<Score> scores = sb.getSortedScores(obj);
             for (Score score : scores) {
                 ScorePlayerTeam team = sb.getPlayersTeam(score.getPlayerName());
                 String line = StringUtils.stripControlCodes(ScorePlayerTeam.formatPlayerName(team, score.getPlayerName())).trim();
+                if (line.toLowerCase().contains("fakepixel")) isFakepixel = true;
                 if (line.contains("Slay the boss!") || line.contains("Combat XP") || line.contains("Kills")) {
-                    slayerStatus = line;
+                    slayerQuestLine = line;
                 }
             }
         } else {
@@ -144,17 +314,79 @@ public class UniversalSkyblockMod {
         }
     }
 
-    // --- 2. ECONOMY & TOOLTIP HANDLER (WITH FAKEPIXEL NAME FALLBACK) ---
+    private void scrapeAuctionHouseChest(GuiChest chestGui) {
+        try {
+            ContainerChest cc = (ContainerChest) chestGui.inventorySlots;
+            IInventory inv = cc.getLowerChestInventory();
+            String title = StringUtils.stripControlCodes(inv.getDisplayName().getUnformattedText());
+            if (!title.contains("Auctions") && !title.contains("Auction House")) return;
+
+            for (int i = 0; i < inv.getSizeInventory(); i++) {
+                ItemStack stack = inv.getStackInSlot(i);
+                if (stack == null || !stack.hasTagCompound()) continue;
+                NBTTagCompound display = stack.getTagCompound().getCompoundTag("display");
+                if (!display.hasKey("Lore", 9)) continue;
+
+                NBTTagList lore = display.getTagList("Lore", 8);
+                for (int j = 0; j < lore.tagCount(); j++) {
+                    String line = StringUtils.stripControlCodes(lore.getStringTagAt(j));
+                    Matcher m = fakepixelBinPattern.matcher(line);
+                    if (m.find()) {
+                        double price = Double.parseDouble(m.group(1).replace(",", ""));
+                        String id = resolveItemId(stack);
+                        if (id != null) {
+                            double existing = fakepixelLocalBinMap.getOrDefault(id, Double.MAX_VALUE);
+                            if (price < existing) {
+                                fakepixelLocalBinMap.put(id, price);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    // =========================================================================
+    // 3. LIVE PRICE TOOLTIPS, DRILL FUEL & SCROLLABLE TOOLTIPS
+    // =========================================================================
     @SubscribeEvent
     public void onItemTooltip(ItemTooltipEvent event) {
-        if (!inSkyblock || !enableTooltips || event.itemStack == null) return;
+        if ((!inSkyblock && !forceEnableEverywhere) || !enableTooltips || event.itemStack == null) return;
 
-        String itemId = getSkyblockItemID(event.itemStack);
+        // Scrollable Tooltips Adjustment via Keyboard UP/DOWN or Mouse Wheel
+        if (enableScrollTooltips) {
+            int wheel = Mouse.getDWheel();
+            if (wheel < 0 || Keyboard.isKeyDown(Keyboard.KEY_DOWN)) tooltipScrollY -= 1;
+            else if (wheel > 0 || Keyboard.isKeyDown(Keyboard.KEY_UP)) tooltipScrollY += 1;
+
+            if (tooltipScrollY < 0 && event.toolTip.size() > 6) {
+                int removeCount = Math.min(Math.abs(tooltipScrollY), event.toolTip.size() - 4);
+                for (int i = 0; i < removeCount; i++) {
+                    if (event.toolTip.size() > 2) event.toolTip.remove(1);
+                }
+                event.toolTip.add(1, EnumChatFormatting.DARK_GRAY + "▲ [Scrolled Down - Press UP Arrow to Reset]");
+            } else {
+                tooltipScrollY = 0;
+            }
+        }
+
+        String itemId = resolveItemId(event.itemStack);
         if (itemId == null) return;
 
         int count = Math.max(1, event.itemStack.stackSize);
+        boolean addedHeader = false;
 
+        // 1. Local Fakepixel Scraped BIN
+        if (fakepixelLocalBinMap.containsKey(itemId)) {
+            double fpBin = fakepixelLocalBinMap.get(itemId);
+            event.toolTip.add("");
+            addedHeader = true;
+            event.toolTip.add(EnumChatFormatting.LIGHT_PURPLE + "Fakepixel Seen BIN: " + EnumChatFormatting.YELLOW + formatter.format(Math.round(fpBin)) + " coins");
+        }
+
+        // 2. Global Lowest BIN (AH)
         if (lowestBinMap.containsKey(itemId)) {
+            if (!addedHeader) { event.toolTip.add(""); addedHeader = true; }
             double lbin = lowestBinMap.get(itemId);
             event.toolTip.add(EnumChatFormatting.GOLD + "Lowest BIN: " + EnumChatFormatting.YELLOW + formatter.format(Math.round(lbin)) + " coins");
             if (count > 1) {
@@ -162,260 +394,43 @@ public class UniversalSkyblockMod {
             }
         }
 
+        // 3. Live Bazaar Buy & Sell
         if (bazaarBuyMap.containsKey(itemId)) {
+            if (!addedHeader) { event.toolTip.add(""); addedHeader = true; }
             double buy = bazaarBuyMap.get(itemId) * count;
             double sell = bazaarSellMap.get(itemId) * count;
-            event.toolTip.add(EnumChatFormatting.GOLD + "Bazaar Buy (" + count + "x): " + EnumChatFormatting.YELLOW + formatter.format(Math.round(buy)) + " coins");
-            event.toolTip.add(EnumChatFormatting.GOLD + "Bazaar Sell (" + count + "x): " + EnumChatFormatting.YELLOW + formatter.format(Math.round(sell)) + " coins");
+            event.toolTip.add(EnumChatFormatting.GOLD + "Bazaar Insta-Buy (" + count + "x): " + EnumChatFormatting.YELLOW + formatter.format(Math.round(buy)) + " coins");
+            event.toolTip.add(EnumChatFormatting.GOLD + "Bazaar Insta-Sell (" + count + "x): " + EnumChatFormatting.YELLOW + formatter.format(Math.round(sell)) + " coins");
+        }
+
+        // 4. Show Internal Item ID at bottom if Shift is held
+        if (Keyboard.isKeyDown(Keyboard.KEY_LSHIFT)) {
+            event.toolTip.add(EnumChatFormatting.DARK_GRAY + "SkyBlock ID: " + itemId);
         }
     }
 
-    private String getSkyblockItemID(ItemStack stack) {
+    private String resolveItemId(ItemStack stack) {
+        if (stack == null) return null;
         if (stack.hasTagCompound()) {
             NBTTagCompound tag = stack.getTagCompound();
             if (tag.hasKey("ExtraAttributes", 10)) {
                 NBTTagCompound ea = tag.getCompoundTag("ExtraAttributes");
-                if (ea.hasKey("id", 8)) return ea.getString("id");
-            }
-        }
-        // Fallback for Fakepixel items without standard ExtraAttributes NBT
-        String cleanName = StringUtils.stripControlCodes(stack.getDisplayName())
-                .replaceAll("✪", "")
-                .replaceAll("\\[Lvl \\d+\\] ", "")
-                .trim()
-                .toUpperCase()
-                .replace(" ", "_")
-                .replace("'", "");
-        if (lowestBinMap.containsKey(cleanName) || bazaarBuyMap.containsKey(cleanName)) {
-            return cleanName;
-        }
-        return null;
-    }
-
-    // --- 3. SLOT LOCKING & DROP PROTECTION ---
-    @SubscribeEvent
-    public void onKeyInputInWorld(InputEvent.KeyInputEvent event) {
-        if (!inSkyblock) return;
-        Minecraft mc = Minecraft.getMinecraft();
-        // Block dropping held item with Q if hotbar slot is locked
-        if (mc.gameSettings.keyBindDrop.isKeyDown()) {
-            int currentSlot = mc.thePlayer.inventory.currentItem;
-            if (lockedSlots.contains(currentSlot)) {
-                mc.thePlayer.playSound("note.bass", 1.0F, 0.5F);
-                mc.thePlayer.addChatMessage(new ChatComponentText("§c[USB] That hotbar slot is locked!"));
-            }
-        }
-    }
-
-    @SubscribeEvent
-    public void onGuiKeyInput(GuiScreenEvent.KeyboardInputEvent.Pre event) {
-        if (!inSkyblock || !(event.gui instanceof GuiContainer)) return;
-        GuiContainer container = (GuiContainer) event.gui;
-        Slot hovered = container.getSlotUnderMouse();
-
-        if (Keyboard.getEventKeyState()) {
-            int key = Keyboard.getEventKey();
-            // Toggle Lock with L
-            if (key == lockSlotKey.getKeyCode() && hovered != null && hovered.inventory == Minecraft.getMinecraft().thePlayer.inventory) {
-                int idx = hovered.getSlotIndex();
-                if (lockedSlots.contains(idx)) {
-                    lockedSlots.remove(idx);
-                    Minecraft.getMinecraft().thePlayer.playSound("random.orb", 0.5F, 0.5F);
-                } else {
-                    lockedSlots.add(idx);
-                    Minecraft.getMinecraft().thePlayer.playSound("random.orb", 0.5F, 1.5F);
-                }
-                saveLockedSlots();
-                event.setCanceled(true);
-            }
-            // Block Q drop inside inventories on locked slots
-            if (key == Minecraft.getMinecraft().gameSettings.keyBindDrop.getKeyCode() && hovered != null) {
-                if (hovered.inventory == Minecraft.getMinecraft().thePlayer.inventory && lockedSlots.contains(hovered.getSlotIndex())) {
-                    Minecraft.getMinecraft().thePlayer.playSound("note.bass", 1.0F, 0.5F);
-                    event.setCanceled(true);
+                if (ea.hasKey("id", 8)) {
+                    return ea.getString("id").toUpperCase();
                 }
             }
         }
-    }
+        // Smart Fallback for Fakepixel items (e.g. "Stock of Stonks" -> "STOCK_OF_STONKS")
+        String rawName = StringUtils.stripControlCodes(stack.getDisplayName());
+        String cleaned = rawName
+                .replaceAll("[✪✦⚚⚔🏹]", "")
+                .replaceAll("\\[Lvl \\d+\\]", "")
+                .replaceAll(" x\\d+$", "")
+                .trim();
 
-    @SubscribeEvent
-    public void onGuiMouseClick(GuiScreenEvent.MouseInputEvent.Pre event) {
-        if (!inSkyblock || !(event.gui instanceof GuiContainer) || !Mouse.getEventButtonState()) return;
-        GuiContainer container = (GuiContainer) event.gui;
-        Slot hovered = container.getSlotUnderMouse();
-        if (hovered != null && hovered.inventory == Minecraft.getMinecraft().thePlayer.inventory) {
-            if (lockedSlots.contains(hovered.getSlotIndex())) {
-                Minecraft.getMinecraft().thePlayer.playSound("note.bass", 1.0F, 0.5F);
-                event.setCanceled(true);
-            }
-        }
-    }
-
-    // --- 4. FLOOR 7 TERMINAL SOLVERS & SLOT LOCK RENDERING (OPTIFINE SAFE) ---
-    @SubscribeEvent
-    public void onDrawGuiPost(GuiScreenEvent.DrawScreenEvent.Post event) {
-        if (!inSkyblock || !(event.gui instanceof GuiContainer)) return;
-        GuiContainer containerGui = (GuiContainer) event.gui;
-
-        int guiLeft = getGuiLeft(containerGui);
-        int guiTop = getGuiTop(containerGui);
-
-        GlStateManager.pushMatrix();
-        GlStateManager.disableLighting();
-        GlStateManager.disableDepth();
-
-        // Draw Locked Slots
-        for (Object obj : containerGui.inventorySlots.inventorySlots) {
-            Slot slot = (Slot) obj;
-            if (slot.inventory == Minecraft.getMinecraft().thePlayer.inventory && lockedSlots.contains(slot.getSlotIndex())) {
-                int x = guiLeft + slot.xDisplayPosition;
-                int y = guiTop + slot.yDisplayPosition;
-                Gui.drawRect(x, y, x + 16, y + 16, 0x66FF0000);
-            }
-        }
-
-        // Draw Floor 7 Terminal Solvers
-        if (enableSolvers && event.gui instanceof GuiChest) {
-            ContainerChest chest = (ContainerChest) containerGui.inventorySlots;
-            IInventory inv = chest.getLowerChestInventory();
-            String title = StringUtils.stripControlCodes(inv.getDisplayName().getUnformattedText()).trim();
-
-            // Solver A: "What starts with: 'X'?"
-            if (title.startsWith("What starts with: '") && title.length() >= 20) {
-                String letter = title.substring(19, 20).toUpperCase();
-                for (int i = 0; i < inv.getSizeInventory(); i++) {
-                    Slot s = chest.getSlot(i);
-                    if (s != null && s.getHasStack() && !s.getStack().isItemEnchanted()) {
-                        String name = StringUtils.stripControlCodes(s.getStack().getDisplayName()).trim().toUpperCase();
-                        if (name.startsWith(letter)) {
-                            Gui.drawRect(guiLeft + s.xDisplayPosition, guiTop + s.yDisplayPosition, guiLeft + s.xDisplayPosition + 16, guiTop + s.yDisplayPosition + 16, 0x8800FF00);
-                        }
-                    }
-                }
-            }
-            // Solver B: "Select all the [COLOR] items!"
-            else if (title.startsWith("Select all the ") && title.endsWith(" items!")) {
-                String color = title.replace("Select all the ", "").replace(" items!", "").trim().toUpperCase();
-                for (int i = 0; i < inv.getSizeInventory(); i++) {
-                    Slot s = chest.getSlot(i);
-                    if (s != null && s.getHasStack() && !s.getStack().isItemEnchanted()) {
-                        String name = StringUtils.stripControlCodes(s.getStack().getDisplayName()).toUpperCase();
-                        if (name.contains(color) || (color.equals("SILVER") && name.contains("LIGHT GRAY"))) {
-                            Gui.drawRect(guiLeft + s.xDisplayPosition, guiTop + s.yDisplayPosition, guiLeft + s.xDisplayPosition + 16, guiTop + s.yDisplayPosition + 16, 0x8800FF00);
-                        }
-                    }
-                }
-            }
-            // Solver C: "Click in order!" (Numbers 1-14)
-            else if (title.equalsIgnoreCase("Click in order!")) {
-                int minStack = 99;
-                Slot nextSlot = null;
-                for (int i = 0; i < inv.getSizeInventory(); i++) {
-                    Slot s = chest.getSlot(i);
-                    if (s != null && s.getHasStack() && s.getStack().getItemDamage() == 14) { // Red stained glass pane = unclicked
-                        if (s.getStack().stackSize < minStack) {
-                            minStack = s.getStack().stackSize;
-                            nextSlot = s;
-                        }
-                    }
-                }
-                if (nextSlot != null) {
-                    Gui.drawRect(guiLeft + nextSlot.xDisplayPosition, guiTop + nextSlot.yDisplayPosition, guiLeft + nextSlot.xDisplayPosition + 16, guiTop + nextSlot.yDisplayPosition + 16, 0x9900FF00);
-                }
-            }
-        }
-
-        GlStateManager.enableDepth();
-        GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
-        GlStateManager.popMatrix();
-    }
-
-    // --- 5. HUD, ALERTS & ACTION BAR PARSER ---
-    @SubscribeEvent
-    public void onChat(ClientChatReceivedEvent event) {
-        if (!inSkyblock) return;
-        String clean = StringUtils.stripControlCodes(event.message.getUnformattedText());
-
-        if (event.type == 2) { // Action Bar
-            Matcher hp = hpPattern.matcher(clean);
-            if (hp.find()) currentHealth = hp.group(1);
-            Matcher def = defPattern.matcher(clean);
-            if (def.find()) currentDefense = def.group(1);
-            Matcher mana = manaPattern.matcher(clean);
-            if (mana.find()) currentMana = mana.group(1);
-            return;
-        }
-
-        if (clean.contains("RARE DROP!") || clean.contains("CRAZY RARE DROP!") || clean.contains("INSANE DROP!")) {
-            Minecraft.getMinecraft().thePlayer.playSound("random.levelup", 1.0F, 0.5F);
-            Minecraft.getMinecraft().ingameGUI.displayTitle("§6§lRARE DROP!", "§e" + clean, 5, 45, 10);
-        } else if (clean.contains("A special Zealot has spawned nearby!")) {
-            Minecraft.getMinecraft().thePlayer.playSound("mob.wither.spawn", 1.0F, 1.0F);
-            Minecraft.getMinecraft().ingameGUI.displayTitle("§c§lSPECIAL ZEALOT!", "§e Eyes Reset! (" + zealotKills + " kills)", 5, 55, 10);
-            zealotKills = 0;
-        }
-    }
-
-    @SubscribeEvent
-    public void onRenderOverlay(RenderGameOverlayEvent.Post event) {
-        if (!inSkyblock || !enableHud || event.type != RenderGameOverlayEvent.ElementType.TEXT) return;
-        Minecraft mc = Minecraft.getMinecraft();
-        FontRenderer fr = mc.fontRendererObj;
-
-        GlStateManager.pushMatrix();
-        fr.drawStringWithShadow("§c❤ HP: §f" + currentHealth, 8, 8, 0xFFFFFF);
-        fr.drawStringWithShadow("§a❈ DEF: §f" + currentDefense, 8, 19, 0xFFFFFF);
-        fr.drawStringWithShadow("§b✎ MANA: §f" + currentMana, 8, 30, 0xFFFFFF);
-
-        float yaw = Math.abs(mc.thePlayer.rotationYaw % 360);
-        float pitch = mc.thePlayer.rotationPitch;
-        fr.drawStringWithShadow(String.format("§e🌾 Angle: §fYaw %.1f° | Pitch %.1f°", yaw, pitch), 8, 41, 0xFFFFFF);
-
-        if (!slayerStatus.equals("None")) {
-            fr.drawStringWithShadow("§5☠ Slayer: §f" + slayerStatus, 8, 52, 0xFFFFFF);
-        }
-
-        GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
-        GlStateManager.popMatrix();
-    }
-
-    // --- HELPERS & API FETCHERS ---
-    private int getGuiLeft(GuiContainer gui) {
-        try { if (guiLeftField != null) return guiLeftField.getInt(gui); } catch (Exception ignored) {}
-        return (gui.width - 176) / 2;
-    }
-
-    private int getGuiTop(GuiContainer gui) {
-        try { if (guiTopField != null) return guiTopField.getInt(gui); } catch (Exception ignored) {}
-        return (gui.height - 166) / 2;
-    }
-
-    private static void saveLockedSlots() {
-        try (PrintWriter out = new PrintWriter(new FileWriter(configFile))) {
-            for (int slot : lockedSlots) out.println(slot);
-        } catch (Exception ignored) {}
-    }
-
-    private static void loadLockedSlots() {
-        if (!configFile.exists()) return;
-        try (BufferedReader br = new BufferedReader(new FileReader(configFile))) {
-            String line;
-            while ((line = br.readLine()) != null) lockedSlots.add(Integer.parseInt(line.trim()));
-        } catch (Exception ignored) {}
-    }
-
-    private static void fetchLowestBins() {
-        try {
-            HttpURLConnection conn = (HttpURLConnection) new URL("https://moulberry.codes/lowestbin.json").openConnection();
-            conn.setRequestProperty("User-Agent", "UniversalSkyblockMod/2.0");
-            JsonObject json = new JsonParser().parse(new InputStreamReader(conn.getInputStream())).getAsJsonObject();
-            for (Map.Entry<String, JsonElement> e : json.entrySet()) lowestBinMap.put(e.getKey(), e.getValue().getAsDouble());
-        } catch (Exception ignored) {}
-    }
-
-    private static void fetchBazaarPrices() {
-        try {
-            HttpURLConnection conn = (HttpURLConnection) new URL("https://api.hypixel.net/skyblock/bazaar").openConnection();
-            JsonObject products = new JsonParser().parse(new InputStreamReader(conn.getInputStream())).getAsJsonObject().getAsJsonObject("products");
-            for (Map.Entry<String, JsonElement> e : products.entrySet()) {
-                JsonObject qs = e.getValue().getAsJsonObject().get
+        // Strip common SkyBlock Reforges if NBT is missing
+        String[] reforges = {"Gentle ", "Odd ", "Fast ", "Fair ", "Epic ", "Sharp ", "Heroic ", "Spicy ", "Legendary ", "Fabled ", "Withered ", "Ancient ", "Necrotic ", "Loving ", "fierce ", "Pure ", "Wise ", "Renowned "};
+        for (String ref : reforges) {
+            if (cleaned.startsWith(ref)) {
+                cleaned = cleaned.substring(ref.length()).trim();
+        
