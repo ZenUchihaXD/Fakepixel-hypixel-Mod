@@ -1,6 +1,6 @@
 [
   {
-    "modid": "${modid}",
+    "modid": "universalsb"
     "name": "Xample Mod",
     "description": "A mod that is used as an example.",
     "version": "${version}",
